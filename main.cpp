@@ -73,6 +73,31 @@ static int PlotSineCmd(ClientData, Tcl_Interp *ip, int objc, Tcl_Obj *const objv
     return TCL_OK;
 }
 
+/* Tcl command:  button label ?width height?
+   Returns 1 if clicked, 0 otherwise.  width/height default to 0 → ImGui default.
+------------------------------------------------------------------*/
+static int ButtonCmd(ClientData, Tcl_Interp* ip, int objc, Tcl_Obj* const objv[])
+{
+    if (objc!=2 && objc!=4) {
+        Tcl_WrongNumArgs(ip, 1, objv, "label ?width height?");
+        return TCL_ERROR;
+    }
+    const char* label = Tcl_GetString(objv[1]);
+
+    float w = 0, h = 0;
+    if (objc == 4) {
+        double dw, dh;
+        if (Tcl_GetDoubleFromObj(ip,objv[2],&dw)!=TCL_OK) return TCL_ERROR;
+        if (Tcl_GetDoubleFromObj(ip,objv[3],&dh)!=TCL_OK) return TCL_ERROR;
+        w = static_cast<float>(dw);
+        h = static_cast<float>(dh);
+    }
+    bool pressed = ImGui::Button(label, ImVec2(w,h));
+    Tcl_SetObjResult(ip, Tcl_NewBooleanObj(pressed));
+    return TCL_OK;
+}
+
+
 // simple one-arg wrapper for igBegin/igEnd
 static int BeginCmd(ClientData, Tcl_Interp* ip, int objc, Tcl_Obj *const objv[]) {
     if (objc!=2) { Tcl_WrongNumArgs(ip,1,objv,"name"); return TCL_ERROR; }
@@ -134,6 +159,8 @@ int main() {
     RegisterHelpers(interp);
     Tcl_CreateObjCommand(interp, "igBegin", BeginCmd, nullptr, nullptr);
     Tcl_CreateObjCommand(interp, "igEnd",   EndCmd,   nullptr, nullptr);
+    Tcl_CreateObjCommand(interp, "button", ButtonCmd, nullptr, nullptr);
+
 
     if (Tcl_EvalFile(interp,"sine_ui.tcl") != TCL_OK) {
         std::fprintf(stderr,"Error sourcing sine_ui.tcl: %s\n",Tcl_GetStringResult(interp));
