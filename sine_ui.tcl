@@ -1,38 +1,49 @@
-# sine_ui.tcl — Tcl logic for the sine-wave ImGui demo
-#
-# Edit this file while the program is running and hit “Save”;
-# post_frame will auto-reload it when the mtime changes.
+###############################################################################
+# sine_ui.tcl  –  hot-reloadable Tcl UI for the ImGui demo
+###############################################################################
 
+# ---------- helper: ImGui button --------------------------------------------
+proc button {label {w 0} {h 0}} {
+    igButton $label [list $w $h]
+}
+
+# ---------- namespace for persistent state ----------------------------------
 namespace eval ::demo {
     variable amp   1.0
     variable freq  1.0
-    variable scriptfile  [file normalize [info script]]
-    variable last_reload [file mtime $scriptfile]
+    variable tone  440.0
+
+    variable script [file normalize [info script]]
+    variable last   [file mtime $script]
 }
 
+# ---------- tiny hook (can stay empty) --------------------------------------
 proc pre_frame {} {}
 
+# ---------- main UI ---------------------------------------------------------
 proc draw_ui {} {
-    igBegin "Sine-Wave Demo"
-    slider_float "Amplitude###amp"  ::demo::amp  0 2
-    slider_float "Frequency###freq" ::demo::freq 0.1 10 0.05
-    plot_sine  $::demo::amp $::demo::freq 512
-    igEnd
 
-    igBegin "Extras"
-    if {[button "Default###def"]} { puts "default clicked!" }
-    button "Wide###big" 160 40
-    igEnd
+    #--- Window 2: audio / MIDI tools ---------------------------------------
+    igBegin "Audio + MIDI Tools"
+    try {
+        slider_float "Tone (Hz)###tone" ::demo::tone 50 1000 1
+        audio_set_freq $::demo::tone
+
+        if {[button "Play default"]} { puts "clicked!" }
+    } finally { igEnd }
 }
 
-
+# ---------- hot-reload ------------------------------------------------------
 proc post_frame {} {
-    variable ::demo::scriptfile
-    variable ::demo::last_reload
-    set mtime [file mtime $scriptfile]
-    if {$mtime > $last_reload} {
-        puts "🔄  Reloading $scriptfile …"
-        set ::demo::last_reload $mtime
-        uplevel #0 [list source $scriptfile]
+    variable ::demo::script
+    variable ::demo::last
+
+    set now [file mtime $script]
+    if {$now > $last} {
+        puts "🔄  Reloading $script"
+        set last $now
+        if {[catch { uplevel #0 [list source $script] } emsg]} {
+            puts "⚠️  Reload failed: $emsg"
+        }
     }
 }

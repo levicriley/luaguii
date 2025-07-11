@@ -1,3 +1,15 @@
 [submodule "external/cimgui"]
     path = external/cimgui
     url  = https://github.com/cimgui/cimgui.git
+[submodule "external/external/portaudio"]
+	path = external/external/portaudio
+	url = https://github.com/PortAudio/portaudio
+[submodule "external/external/rtmidi"]
+	path = external/external/rtmidi
+	url = https://github.com/thestk/rtmidi
+[submodule "external/portaudio"]
+	path = external/portaudio
+	url = https://github.com/PortAudio/portaudio
+[submodule "external/rtmidi"]
+	path = external/rtmidi
+	url = https://github.com/thestk/rtmidi
