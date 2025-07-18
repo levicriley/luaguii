@@ -22,16 +22,24 @@ proc pre_frame {} {}
 
 # ---------- main UI ---------------------------------------------------------
 proc draw_ui {} {
+    # ---------- Window 1 ----------
+    igBegin "Sine‑Wave"
+    try {
+        slider_float "Amp###amp"  ::demo::amp  0 2
+        slider_float "Freq###freq" ::demo::freq 0.1 10 0.05
+        plot_sine  $::demo::amp $::demo::freq
+    } finally { igEnd }
 
-    #--- Window 2: audio / MIDI tools ---------------------------------------
+    # ---------- Window 2 ----------
     igBegin "Audio + MIDI Tools"
     try {
         slider_float "Tone (Hz)###tone" ::demo::tone 50 1000 1
         audio_set_freq $::demo::tone
 
-        if {[button "Play default"]} { puts "clicked!" }
+        if {[igButton "Click me" NULL]} { puts "clicked" }
     } finally { igEnd }
 }
+
 
 # ---------- hot-reload ------------------------------------------------------
 proc post_frame {} {
