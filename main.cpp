@@ -211,6 +211,139 @@ static int GL_Triangle_Cmd(ClientData,Tcl_Interp* ip,int objc,Tcl_Obj* const ov[
 
     return TCL_OK;
 }
+/*────────────────────────  cube : shader + VAO  ───────────────────────*/
+static GLuint gCubeProg = 0, gCubeVAO = 0, gCubeVBO = 0;
+static MiniFBO gCubeFBO;                                // reuse helper
+
+// --- replace the two older helpers -----------------------------------------------------
+
+static const char* cubeVS = R"(
+    #version 330 core
+    layout(location=0) in vec3 p;
+
+    uniform float angle;   // radians
+    uniform float aspect;  // side/side == 1, but keep in case you change FBO
+
+    // very small helper: column‑major mat4 from 16 floats -----------------
+    mat4 m4(float a0,float a1,float a2,float a3,
+            float b0,float b1,float b2,float b3,
+            float c0,float c1,float c2,float c3,
+            float d0,float d1,float d2,float d3)
+    { return mat4(a0,a1,a2,a3, b0,b1,b2,b3, c0,c1,c2,c3, d0,d1,d2,d3); }
+
+    void main()
+    {
+        /* 1) model: rotate & scale */
+        mat4 R = m4(  cos(angle), 0, -sin(angle), 0,
+                       0,         1,  0,          0,
+                       sin(angle), 0,  cos(angle), 0,
+                       0,0,0,1);
+        mat4 S = m4( 0.6,0,0,0,  0,0.6,0,0,  0,0,0.6,0,  0,0,0,1);
+
+        /* 2) view: simple camera at +Z looking toward origin */
+        mat4 V = m4( 1,0,0,0,  0,1,0,0,  0,0,1,0,  0,0,-3,1);
+
+        /* 3) projection:  60° vertical FOV, 0.1–10 range */
+        float f = 1.0 / tan(radians(60.0)/2.0);
+        mat4 P = m4( f/aspect,0,0,0,
+                     0,f,0,0,
+                     0,0,-(10+0.1)/(10-0.1),-1,
+                     0,0,-(2*10*0.1)/(10-0.1),0);
+
+        gl_Position = P * V * R * S * vec4(p,1);
+    }
+)";
+
+static const char* cubeFS = R"(
+    #version 330 core
+    out vec4 color;
+    void main(){ color = vec4(0.7,0.8,1.0,1); }   // light blue
+)";
+
+static void ensureCubeProgram()
+{
+    if (gCubeProg) return;
+
+    auto sh = [&](GLenum t,const char* s){
+        GLuint id = glCreateShader(t);
+        glShaderSource(id,1,&s,nullptr); glCompileShader(id);
+        GLint ok; glGetShaderiv(id,GL_COMPILE_STATUS,&ok);
+        if(!ok){ char log[256]; glGetShaderInfoLog(id,256,nullptr,log);
+                 fprintf(stderr,"%s\n",log); }
+        return id;
+    };
+
+    gCubeProg = glCreateProgram();
+    glAttachShader(gCubeProg, sh(GL_VERTEX_SHADER  , cubeVS));
+    glAttachShader(gCubeProg, sh(GL_FRAGMENT_SHADER, cubeFS));
+    glLinkProgram(gCubeProg);
+
+    /* ---------- NEW: upload 36‑vertex cube ---------- */
+    const float verts[] = {
+        // front
+        -1,-1, 1,  1,-1, 1,  1, 1, 1,  -1,-1, 1,  1, 1, 1,  -1, 1, 1,
+        // back
+        -1,-1,-1, -1, 1,-1,  1, 1,-1,  -1,-1,-1,  1, 1,-1,   1,-1,-1,
+        // left
+        -1,-1,-1, -1,-1, 1, -1, 1, 1,  -1,-1,-1, -1, 1, 1,  -1, 1,-1,
+        // right
+         1,-1,-1,  1, 1,-1,  1, 1, 1,   1,-1,-1,  1, 1, 1,   1,-1, 1,
+        // top
+        -1, 1,-1, -1, 1, 1,  1, 1, 1,  -1, 1,-1,  1, 1, 1,   1, 1,-1,
+        // bottom
+        -1,-1,-1,  1,-1,-1,  1,-1, 1,  -1,-1,-1,  1,-1, 1,  -1,-1, 1
+    };
+
+    glGenVertexArrays(1,&gCubeVAO);
+    glGenBuffers     (1,&gCubeVBO);
+
+    glBindVertexArray(gCubeVAO);
+    glBindBuffer(GL_ARRAY_BUFFER, gCubeVBO);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(verts), verts, GL_STATIC_DRAW);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 0, (void*)0);
+    glEnableVertexAttribArray(0);
+    /* ------------------------------------------------- */
+}
+
+
+/* draw the cube into an FBO of size ‹side›×‹side›, rotated ‹angle› radians */
+static void renderCube(int side,float angle)
+{
+    ensureCubeProgram();
+    gCubeFBO.ensure(side);
+
+    glBindFramebuffer(GL_FRAMEBUFFER,gCubeFBO.fbo);
+    glViewport(0,0,side,side);
+    glEnable(GL_DEPTH_TEST);
+    glClearColor(0.1f,0.12f,0.16f,1);
+    glClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT);
+
+    glUseProgram(gCubeProg);
+    glUniform1f(glGetUniformLocation(gCubeProg,"angle"),angle);
+    glUniform1f(glGetUniformLocation(gCubeProg,"aspect"),1.0f); // square FBO
+
+    glBindVertexArray(gCubeVAO);
+    glDrawArrays(GL_TRIANGLES,0,36);
+
+    glBindFramebuffer(GL_FRAMEBUFFER,0);
+    glDisable(GL_DEPTH_TEST);
+}
+
+
+/* Tcl command:  gl_cube <pixels> <angle‑rad>   (second arg required) */
+static int GL_Cube_Cmd(ClientData,Tcl_Interp* ip,int objc,Tcl_Obj* const ov[])
+{
+    if(objc!=3){ Tcl_WrongNumArgs(ip,1,ov,"sidePx angleRad"); return TCL_ERROR; }
+    int side; double ang;
+    if(Tcl_GetIntFromObj(ip,ov[1],&side)!=TCL_OK) return TCL_ERROR;
+    if(Tcl_GetDoubleFromObj(ip,ov[2],&ang)!=TCL_OK) return TCL_ERROR;
+
+    renderCube(side,(float)ang);
+    ImGui::Image((ImTextureID)(intptr_t)gCubeFBO.tex,
+                 ImVec2((float)side,(float)side),
+                 ImVec2(0,1), ImVec2(1,0));   // flip vertically
+    return TCL_OK;
+}
 
 /*──────────────────── 4. RtMidi helper ─────────────────────────*/
 static int Midi_List_Cmd(ClientData,Tcl_Interp* ip,int,Tcl_Obj* const*)
@@ -238,6 +371,9 @@ static void registerAll(Tcl_Interp* ip)
     Tcl_CreateObjCommand(ip,"midi_ports",    Midi_List_Cmd,    nullptr,nullptr);
 
     Tcl_CreateObjCommand(ip,"imgui_button",  DefaultButton_Cmd,nullptr,nullptr);
+    /* in registerAll(...) add one line */
+    Tcl_CreateObjCommand(ip,"gl_cube",GL_Cube_Cmd,nullptr,nullptr);
+
 }
 
 /*──────────────────── 6. Entry point ───────────────────────────*/
