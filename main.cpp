@@ -14,6 +14,13 @@
 #include "imgui_impl_glfw.h"
 #include "imgui_impl_opengl3.h"
 
+// Lua headers
+extern "C" {
+#include <lua.h>
+#include <lualib.h>
+#include <lauxlib.h>
+}
+
 #include <vector>
 #include <cmath>
 #include <cstdio>
@@ -378,6 +385,20 @@ static void registerAll(Tcl_Interp* ip)
 
 /*──────────────────── 6. Entry point ───────────────────────────*/
 static void glfwErr(int e,const char* d){ std::fprintf(stderr,"GLFW %d: %s\n",e,d); }
+/*────────────────────  Lua helpers  ─────────────────────────────*/
+static void callLuaIfExists(lua_State* L, const char* fn)
+{
+    lua_getglobal(L, fn);           // push fn onto stack
+    if (lua_isfunction(L, -1)) {
+        if (lua_pcall(L, 0, 0, 0) != LUA_OK) {
+            std::fprintf(stderr, "Lua error in %s(): %s\n",
+                         fn, lua_tostring(L, -1));
+            lua_pop(L, 1);          // remove error message
+        }
+    } else {
+        lua_pop(L, 1);              // remove non‑function
+    }
+}
 
 int main()
 {
@@ -413,15 +434,39 @@ int main()
         std::fprintf(stderr,"Tcl error: %s\n",Tcl_GetStringResult(ip)); return 1;
     }
 
+    /* Lua ---------------------------------------------------------------- */
+    lua_State* L = luaL_newstate();
+    luaL_openlibs(L);
+
+    /* ensure current dir is on package.cpath so Lua can find imgui_lua.so */
+    lua_getglobal(L,"package");
+    lua_getfield (L,-1,"cpath");
+    const char* cp = lua_tostring(L,-1);
+    std::string newcpath = cp ? std::string(cp)+";./?.so" : "./?.so";
+    lua_pop(L,1);              // pop old cpath
+    lua_pushlstring(L,newcpath.c_str(),newcpath.size());
+    lua_setfield (L,-2,"cpath");
+    lua_pop(L,1);              // pop package
+
+    /* load SWIG binding (non‑fatal if missing) */
+    luaL_dostring(L,"pcall(require,'imgui')");
+
+    /* optional UI script */
+    if (luaL_dofile(L,"sine_ui.lua") != LUA_OK) {
+        lua_pop(L,1);  /* ignore missing file / errors */
+    }
+
     /* main loop */
     while(!glfwWindowShouldClose(win)){
         glfwPollEvents();
         Tcl_Eval(ip,"pre_frame");
+        callLuaIfExists(L,"pre_frame");
 
         ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplGlfw_NewFrame();
         ImGui::NewFrame();
         Tcl_Eval(ip,"draw_ui");
+        callLuaIfExists(L,"draw_ui");
 
         ImGui::Render();
         int w,h; glfwGetFramebufferSize(win,&w,&h);
@@ -431,6 +476,7 @@ int main()
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
 
         Tcl_Eval(ip,"post_frame");
+        callLuaIfExists(L,"post_frame");
         glfwSwapBuffers(win);
     }
 
@@ -440,5 +486,7 @@ int main()
     ImGui_ImplOpenGL3_Shutdown(); ImGui_ImplGlfw_Shutdown();
     ImGui::DestroyContext();
     glfwDestroyWindow(win); glfwTerminate();
+
+    lua_close(L);
     return 0;
 }
