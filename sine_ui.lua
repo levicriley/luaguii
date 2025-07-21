@@ -1,30 +1,41 @@
 -- sine_ui.lua
 
--- initial parameters (you can tweak these)
+-- state for sine plot
 local amp     = 1.0
 local freq    = 2.0
 local samples = 512
 
--- called before ImGui frames (optional)
+-- state for cube
+local angle   = 0.0
+
 function pre_frame()
-  -- no-op for now
+  -- (no‑op)
 end
 
--- your Lua‑driven UI
 function draw_ui()
-  -- open a new window called "Lua Sine Plot"
+  -- ─── SINE WINDOW ────────────────────────────────────────────
   demo.Begin("Lua Sine Plot")
-    -- sliders (demo.slider_float = our C++ wrapper)
-    amp     = demo.slider_float("Amplitude", amp,     0.0,  5.0, 0.01)
-    freq    = demo.slider_float("Frequency", freq,    0.1, 20.0, 0.10)
-    samples = math.tointeger(demo.slider_float("Samples", samples, 16, 1024, 16))
-
-    -- plot the sine wave
+    -- amplitude/frequency sliders
+    amp     = demo.slider_float("Amplitude", amp,     0.0,  5.0)
+    freq    = demo.slider_float("Frequency", freq,    0.1, 20.0)
+    -- integer samples slider
+    local raw = demo.slider_float("Samples", samples, 16, 1024)
+    samples   = math.floor(raw + 0.5)
+    -- plot it
     demo.plot_sine(amp, freq, samples)
+  demo.End()
+
+  -- ─── CUBE WINDOW ────────────────────────────────────────────
+  demo.Begin("Lua Cube")
+    -- bump angle by a fixed amount each frame
+    angle = angle + (2*math.pi) * (1/60)  -- 1 rev/sec @~60fps
+    if angle >= 2*math.pi then angle = angle - 2*math.pi end
+
+    -- draw the cube at 128×128 px, rotated by ‘angle’ radians
+    demo.gl_cube(128, angle)
   demo.End()
 end
 
--- called after ImGui frames (optional)
 function post_frame()
-  -- no-op for now
+  -- (no‑op)
 end
