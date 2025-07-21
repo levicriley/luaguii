@@ -1,4 +1,3 @@
-\
 # Lua × Dear ImGui – Sine‑Wave Demo (Full CMake + cimgui submodule)
 
 This repo shows how to:
