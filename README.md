@@ -1,12 +1,12 @@
 \
-# Tcl × Dear ImGui – Sine‑Wave Demo (Full CMake + cimgui submodule)
+# Lua × Dear ImGui – Sine‑Wave Demo (Full CMake + cimgui submodule)
 
 This repo shows how to:
 
 * Add **cimgui** as a Git sub‑module (`external/cimgui`).
-* Auto‑generate a **SWIG Tcl extension** that surfaces the full Dear ImGui API (`imgui_tcl`).
-* Keep the high‑frequency render loop in C++ while scripting UI/state in Tcl.
-* Plot a live sine‑wave whose amplitude and frequency are bound to Tcl variables.
+* Auto‑generate a **SWIG Lua extension** that surfaces the full Dear ImGui API (`imgui_tcl`).
+* Keep the high‑frequency render loop in C++ while scripting UI/state in Lua.
+* Plot a live sine‑wave whose amplitude and frequency are bound to Lua variables.
 
 ## Quick Start
 
