@@ -9,10 +9,12 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 #-------------------------------------------------
 find_package(OpenGL REQUIRED)
 find_package(glfw3 3.3 REQUIRED)
-find_package(Lua 5.3 REQUIRED)
 find_package(SWIG 4 REQUIRED)
 find_package(GLEW REQUIRED)
 include(UseSWIG)
+
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(LUAJIT REQUIRED luajit)
 
 #-------------------------------------------------
 #  cimgui submodule
@@ -54,7 +56,8 @@ target_link_libraries(imgui_backend PUBLIC glfw OpenGL::GL GLEW::GLEW)
 #-------------------------------------------------
 set(CMAKE_SWIG_FLAGS
     -I${CIMGUI_DIR}
-    -DCIMGUI_DEFINE_ENUMS_AND_STRUCTS)
+    -DCIMGUI_DEFINE_ENUMS_AND_STRUCTS
+    -I${LUAJIT_INCLUDE_DIRS})
 
 set_source_files_properties(${CMAKE_CURRENT_SOURCE_DIR}/imgui.i PROPERTIES CPLUSPLUS ON)
 
@@ -68,10 +71,10 @@ swig_add_library(imgui_lua
     LANGUAGE lua
     SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/imgui.i)
 
-swig_link_libraries(imgui_lua PRIVATE cimgui ${LUA_LIBRARIES} dl)
+swig_link_libraries(imgui_lua PRIVATE cimgui ${LUAJIT_LIBRARIES} dl)
 target_include_directories(imgui_lua PRIVATE
     ${CIMGUI_DIR}
-    ${LUA_INCLUDE_DIR})
+    ${LUAJIT_INCLUDE_DIRS})
 target_compile_definitions(imgui_lua PRIVATE CIMGUI_DEFINE_ENUMS_AND_STRUCTS)
 
 #-------------------------------------------------
@@ -99,7 +102,7 @@ add_executable(sine_demo
 target_include_directories(sine_demo PRIVATE
     ${IMGUI_DIR}
     ${IMGUI_DIR}/backends
-    ${LUA_INCLUDE_DIR}
+    ${LUAJIT_INCLUDE_DIRS}
     ${GLEW_INCLUDE_DIRS})
 
 target_compile_definitions(sine_demo PRIVATE IMGUI_IMPL_OPENGL_LOADER_GLEW)
@@ -110,7 +113,7 @@ target_link_libraries(sine_demo PRIVATE
     glfw
     OpenGL::GL
     GLEW::GLEW
-    ${LUA_LIBRARIES}
+    ${LUAJIT_LIBRARIES}
     dl pthread
     ${PORTAUDIO_LIB}
     rtmidi)
