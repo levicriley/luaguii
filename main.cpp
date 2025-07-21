@@ -312,51 +312,6 @@ static void renderCube(int side,float angle)
 }
 
 
-static int GL_Triangle_Cmd(ClientData,Tcl_Interp* ip,int objc,Tcl_Obj* const ov[])
-{
-    int side=256; if(objc==2 && Tcl_GetIntFromObj(ip,ov[1],&side)!=TCL_OK) return TCL_ERROR;
-    renderTriangle(side);
-    ImGui::Image((ImTextureID)(intptr_t)gMini.tex,ImVec2((float)side,(float)side),
-                 ImVec2(0,1),ImVec2(1,0));
-    return TCL_OK;
-}
-
-static int GL_Cube_Cmd(ClientData,Tcl_Interp* ip,int objc,Tcl_Obj* const ov[])
-{
-    if(objc!=3){ Tcl_WrongNumArgs(ip,1,ov,"sidePx angleRad"); return TCL_ERROR; }
-    int side; double ang;
-    if(Tcl_GetIntFromObj(ip,ov[1],&side)!=TCL_OK) return TCL_ERROR;
-    if(Tcl_GetDoubleFromObj(ip,ov[2],&ang)!=TCL_OK) return TCL_ERROR;
-    renderCubeInto(gTclCubeFBO, side, (float)ang);
-    ImGui::Image((ImTextureID)(intptr_t)gTclCubeFBO.tex,
-                 ImVec2((float)side,(float)side),
-                 ImVec2(0,1),ImVec2(1,0));
-    return TCL_OK;
-}
-
-/*──────────────────── 5. RtMidi helper & Tcl registration ─────────────────*/
-static int Midi_List_Cmd(ClientData,Tcl_Interp* ip,int,Tcl_Obj* const*)
-{
-    RtMidiIn in; Tcl_Obj* list=Tcl_NewListObj(0,nullptr);
-    for(unsigned p=0;p<in.getPortCount();++p)
-        Tcl_ListObjAppendElement(ip,list,
-            Tcl_NewStringObj(in.getPortName(p).c_str(),-1));
-    Tcl_SetObjResult(ip,list); return TCL_OK;
-}
-
-static void registerAllTcl(Tcl_Interp* ip)
-{
-    Tcl_CreateObjCommand(ip,"slider_float",   SliderFloatVarCmd,nullptr,nullptr);
-    Tcl_CreateObjCommand(ip,"plot_sine",      PlotSineCmd,      nullptr,nullptr);
-    Tcl_CreateObjCommand(ip,"gl_triangle",    GL_Triangle_Cmd,  nullptr,nullptr);
-    Tcl_CreateObjCommand(ip,"igBegin",        BeginCmd,         nullptr,nullptr);
-    Tcl_CreateObjCommand(ip,"igEnd",          EndCmd,           nullptr,nullptr);
-    Tcl_CreateObjCommand(ip,"audio_set_freq", Audio_SetFreq_Cmd,nullptr,nullptr);
-    Tcl_CreateObjCommand(ip,"midi_ports",     Midi_List_Cmd,    nullptr,nullptr);
-    Tcl_CreateObjCommand(ip,"imgui_button",   DefaultButton_Cmd,nullptr,nullptr);
-    Tcl_CreateObjCommand(ip,"gl_cube",        GL_Cube_Cmd,      nullptr,nullptr);
-}
-
 /*──────────────────── 6. Lua wrappers & registration ─────────────────*/
 static int lua_slider_float(lua_State* L){
     int n=lua_gettop(L);
@@ -471,15 +426,6 @@ int main(){
     ImGui_ImplOpenGL3_Init("#version 330");
     ImVec4 clear={0.16f,0.18f,0.22f,1};
 
-    Tcl_FindExecutable(nullptr);
-    Tcl_Interp* ip=Tcl_CreateInterp(); Tcl_Init(ip);
-    Tcl_Eval(ip,"load ./imgui_tcl.so");
-    registerAllTcl(ip);
-    if(Tcl_EvalFile(ip,"sine_ui.tcl")!=TCL_OK){
-        std::fprintf(stderr,"[Tcl] load error: %s\n",Tcl_GetStringResult(ip));
-        return 1;
-    }
-
     lua_State* L=luaL_newstate(); luaL_openlibs(L);
     lua_getglobal(L,"package");
     lua_getfield (L,-1,"cpath");
@@ -500,12 +446,12 @@ int main(){
 
     while(!glfwWindowShouldClose(win)){
         glfwPollEvents();
-        Tcl_Eval(ip,"pre_frame");  callLuaIfExists(L,"pre_frame");
+        callLuaIfExists(L,"pre_frame");
 
         ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplGlfw_NewFrame();
         ImGui::NewFrame();
-        Tcl_Eval(ip,"draw_ui");    callLuaIfExists(L,"draw_ui");
+        callLuaIfExists(L,"draw_ui");
 
         ImGui::Render();
         int w,h; glfwGetFramebufferSize(win,&w,&h);
@@ -514,12 +460,11 @@ int main(){
         glClear(GL_COLOR_BUFFER_BIT);
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
 
-        Tcl_Eval(ip,"post_frame"); callLuaIfExists(L,"post_frame");
+        callLuaIfExists(L,"post_frame");
         glfwSwapBuffers(win);
     }
 
     Pa_StopStream(stream); Pa_CloseStream(stream); Pa_Terminate();
-    Tcl_DeleteInterp(ip);
     ImGui_ImplOpenGL3_Shutdown(); ImGui_ImplGlfw_Shutdown();
     ImGui::DestroyContext();
     glfwDestroyWindow(win); glfwTerminate();
