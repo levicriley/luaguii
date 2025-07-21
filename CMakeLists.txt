@@ -5,12 +5,11 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 #-------------------------------------------------
-#  Dependencies: OpenGL, GLFW, Tcl, Lua, SWIG, GLEW
+#  Dependencies: OpenGL, GLFW, Lua, SWIG, GLEW
 #-------------------------------------------------
 find_package(OpenGL REQUIRED)
 find_package(glfw3 3.3 REQUIRED)
-find_package(TCL 8.6 REQUIRED)
-find_package(Lua 5.3 REQUIRED)       # <‑‑ NEW
+find_package(Lua 5.3 REQUIRED)
 find_package(SWIG 4 REQUIRED)
 find_package(GLEW REQUIRED)
 include(UseSWIG)
@@ -59,22 +58,10 @@ set(CMAKE_SWIG_FLAGS
 
 set_source_files_properties(${CMAKE_CURRENT_SOURCE_DIR}/imgui.i PROPERTIES CPLUSPLUS ON)
 
-#-------------------------------------------------
-#  SWIG Tcl binding  (imgui_tcl)
-#-------------------------------------------------
-swig_add_library(imgui_tcl
-    TYPE MODULE
-    LANGUAGE tcl
-    SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/imgui.i)
 
-swig_link_libraries(imgui_tcl PRIVATE cimgui ${TCL_LIBRARIES} dl)
-target_include_directories(imgui_tcl PRIVATE
-    ${CIMGUI_DIR}
-    ${TCL_INCLUDE_PATH})
-target_compile_definitions(imgui_tcl PRIVATE CIMGUI_DEFINE_ENUMS_AND_STRUCTS)
 
 #-------------------------------------------------
-#  SWIG Lua binding  (imgui_lua)            <‑‑ NEW
+#  SWIG Lua binding  (imgui_lua)
 #-------------------------------------------------
 swig_add_library(imgui_lua
     TYPE MODULE
@@ -112,8 +99,7 @@ add_executable(sine_demo
 target_include_directories(sine_demo PRIVATE
     ${IMGUI_DIR}
     ${IMGUI_DIR}/backends
-    ${TCL_INCLUDE_PATH}
-    ${LUA_INCLUDE_DIR}      # <‑‑ NEW
+    ${LUA_INCLUDE_DIR}
     ${GLEW_INCLUDE_DIRS})
 
 target_compile_definitions(sine_demo PRIVATE IMGUI_IMPL_OPENGL_LOADER_GLEW)
@@ -124,25 +110,18 @@ target_link_libraries(sine_demo PRIVATE
     glfw
     OpenGL::GL
     GLEW::GLEW
-    ${TCL_LIBRARY}
-    ${LUA_LIBRARIES}        # <‑‑ NEW
+    ${LUA_LIBRARIES}
     dl pthread
     ${PORTAUDIO_LIB}
     rtmidi)
 
 #-------------------------------------------------
-#  Post‑build: copy Tcl & Lua scripts/modules   <‑‑ UPDATED
+#  Post‑build: copy scripts/modules   <‑‑ UPDATED
 #-------------------------------------------------
 add_custom_command(TARGET sine_demo POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E make_directory $<TARGET_FILE_DIR:sine_demo>
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            $<TARGET_FILE:imgui_tcl>
-            $<TARGET_FILE_DIR:sine_demo>
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
             $<TARGET_FILE:imgui_lua>
-            $<TARGET_FILE_DIR:sine_demo>
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            ${CMAKE_CURRENT_SOURCE_DIR}/sine_ui.tcl
             $<TARGET_FILE_DIR:sine_demo>
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
             ${CMAKE_CURRENT_SOURCE_DIR}/sine_ui.lua

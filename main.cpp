@@ -10,7 +10,6 @@
 #include <portaudio.h>
 #include "RtMidi.h"
 
-#include <tcl.h>
 #include "imgui.h"
 #include "imgui_impl_glfw.h"
 #include "imgui_impl_opengl3.h"
@@ -47,79 +46,6 @@ static int paCB(const void*, void* out,
     }
     return paContinue;
 }
-
-static int Audio_SetFreq_Cmd(ClientData, Tcl_Interp* ip, int objc, Tcl_Obj* const ov[])
-{
-    if (objc != 2) { Tcl_WrongNumArgs(ip,1,ov,"freqHz"); return TCL_ERROR; }
-    double f; if (Tcl_GetDoubleFromObj(ip,ov[1],&f) != TCL_OK) return TCL_ERROR;
-    gSine.freq = f; return TCL_OK;
-}
-
-/*──────────────────── 2. ImGui helpers exposed to Tcl ─────────────────*/
-static int SliderFloatVarCmd(ClientData,Tcl_Interp* ip,int objc,Tcl_Obj* const ov[])
-{
-    if (objc < 5 || objc > 6) {
-        Tcl_WrongNumArgs(ip,1,ov,"label var min max ?step?"); return TCL_ERROR;
-    }
-    const char* lbl = Tcl_GetString(ov[1]);
-    const char* var = Tcl_GetString(ov[2]);
-    double mn,mx,st = 0.001;
-    if (Tcl_GetDoubleFromObj(ip,ov[3],&mn)!=TCL_OK) return TCL_ERROR;
-    if (Tcl_GetDoubleFromObj(ip,ov[4],&mx)!=TCL_OK) return TCL_ERROR;
-    if (objc==6 && Tcl_GetDoubleFromObj(ip,ov[5],&st)!=TCL_OK) return TCL_ERROR;
-
-    Tcl_Obj* cur = Tcl_GetVar2Ex(ip,var,nullptr,TCL_GLOBAL_ONLY);
-    double v = mn;
-    if (cur && Tcl_GetDoubleFromObj(ip,cur,&v)!=TCL_OK) v = mn;
-    float fv = static_cast<float>(v);
-
-    if (ImGui::SliderFloat(lbl,&fv,(float)mn,(float)mx,"%.3f",0.f))
-        Tcl_SetVar2Ex(ip,var,nullptr,Tcl_NewDoubleObj(fv),TCL_GLOBAL_ONLY);
-
-    Tcl_SetObjResult(ip,Tcl_NewDoubleObj(fv));
-    return TCL_OK;
-}
-
-static int PlotSineCmd(ClientData,Tcl_Interp* ip,int objc,Tcl_Obj* const ov[])
-{
-    if (objc != 3 && objc != 4) {
-        Tcl_WrongNumArgs(ip,1,ov,"amp freq ?samples?"); return TCL_ERROR;
-    }
-    double amp,freq; int n = 512;
-    if (Tcl_GetDoubleFromObj(ip,ov[1],&amp)!=TCL_OK)  return TCL_ERROR;
-    if (Tcl_GetDoubleFromObj(ip,ov[2],&freq)!=TCL_OK) return TCL_ERROR;
-    if (objc==4 && Tcl_GetIntFromObj(ip,ov[3],&n)!=TCL_OK) return TCL_ERROR;
-
-    n = std::clamp(n,2,2048);
-    static std::vector<float> buf; buf.resize(n);
-    const float tp = 6.2831853f;
-    for (int i=0;i<n;++i){
-        float t = (float)i/(n-1);
-        buf[i]  = static_cast<float>(amp * std::sin(tp * freq * t));
-    }
-    ImGui::PlotLines("##sine",buf.data(),n,0,nullptr,
-                     (float)-amp,(float)amp,ImVec2(-1,150));
-    return TCL_OK;
-}
-
-static int BeginCmd(ClientData,Tcl_Interp* ip,int objc,Tcl_Obj* const ov[])
-{
-    if (objc!=2){ Tcl_WrongNumArgs(ip,1,ov,"title"); return TCL_ERROR; }
-    ImGui::Begin(Tcl_GetString(ov[1])); return TCL_OK;
-}
-static int EndCmd(ClientData, Tcl_Interp*, int, Tcl_Obj* const*)
-{
-    ImGui::End(); return TCL_OK;
-}
-
-static int DefaultButton_Cmd(ClientData,Tcl_Interp* ip,int objc,Tcl_Obj* const ov[])
-{
-    if (objc != 2) { Tcl_WrongNumArgs(ip,1,ov,"label"); return TCL_ERROR; }
-    bool pressed = ImGui::Button(Tcl_GetString(ov[1]));
-    Tcl_SetObjResult(ip, Tcl_NewBooleanObj(pressed));
-    return TCL_OK;
-}
-
 /*──────────────────── 3. FBO + shader triangle ─────────────────────*/
 struct MiniFBO {
     GLuint fbo=0,tex=0,rbo=0; int w=0,h=0;
