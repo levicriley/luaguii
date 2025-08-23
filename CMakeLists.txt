@@ -5,91 +5,63 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 #-------------------------------------------------
-#  Dependencies: OpenGL, GLFW, Lua, SWIG, GLEW
+#  Dependencies: OpenGL, GLFW, LuaJIT, GLEW
 #-------------------------------------------------
 find_package(OpenGL REQUIRED)
 find_package(glfw3 3.3 REQUIRED)
-find_package(SWIG 4 REQUIRED)
 find_package(GLEW REQUIRED)
-include(UseSWIG)
 
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(LUAJIT REQUIRED luajit)
 
 #-------------------------------------------------
-#  cimgui submodule
+#  Dear ImGui (regular, vendored)
 #-------------------------------------------------
-set(CIMGUI_DIR ${CMAKE_CURRENT_SOURCE_DIR}/external/cimgui)
-add_subdirectory(${CIMGUI_DIR} external/cimgui_build)   # target: cimgui
+set(IMGUI_DIR ${CMAKE_CURRENT_SOURCE_DIR}/external/imgui)
 
-#-------------------------------------------------
-#  Dear ImGui sources inside cimgui (handle old layouts)
-#-------------------------------------------------
-set(IMGUI_DIR ${CIMGUI_DIR}/imgui)
-if(NOT EXISTS ${IMGUI_DIR}/imgui.h)
-    set(IMGUI_DIR ${CIMGUI_DIR}/third-party/imgui)
-endif()
-if(NOT EXISTS ${IMGUI_DIR}/imgui.h)
-    set(IMGUI_DIR ${CIMGUI_DIR}/thirdparty/imgui)
-endif()
-if(NOT EXISTS ${IMGUI_DIR}/imgui.h)
-    message(FATAL_ERROR "Could not locate imgui inside ${CIMGUI_DIR}")
-endif()
+set(IMGUI_SRC
+    ${IMGUI_DIR}/imgui.cpp
+    ${IMGUI_DIR}/imgui_draw.cpp
+    ${IMGUI_DIR}/imgui_tables.cpp
+    ${IMGUI_DIR}/imgui_widgets.cpp
+    ${IMGUI_DIR}/imgui_demo.cpp       # optional, remove if you don't want it
+)
 
-#-------------------------------------------------
-#  ImGui back‑end (GLFW + GL3, GLEW loader)
-#-------------------------------------------------
+add_library(imgui STATIC ${IMGUI_SRC})
+target_include_directories(imgui PUBLIC ${IMGUI_DIR})
+set_property(TARGET imgui PROPERTY POSITION_INDEPENDENT_CODE ON)
+
+# Backends (GLFW + OpenGL3)
 set(IMGUI_BACKEND_SRC
     ${IMGUI_DIR}/backends/imgui_impl_glfw.cpp
-    ${IMGUI_DIR}/backends/imgui_impl_opengl3.cpp)
+    ${IMGUI_DIR}/backends/imgui_impl_opengl3.cpp
+)
 
 add_library(imgui_backend STATIC ${IMGUI_BACKEND_SRC})
 target_include_directories(imgui_backend PUBLIC
     ${IMGUI_DIR}
     ${IMGUI_DIR}/backends
-    ${GLEW_INCLUDE_DIRS})
+    ${GLEW_INCLUDE_DIRS}
+)
 target_compile_definitions(imgui_backend PUBLIC IMGUI_IMPL_OPENGL_LOADER_GLEW)
-target_link_libraries(imgui_backend PUBLIC glfw OpenGL::GL GLEW::GLEW)
-
-#-------------------------------------------------
-#  Common SWIG flags
-#-------------------------------------------------
-set(CMAKE_SWIG_FLAGS
-    -I${CIMGUI_DIR}
-    -DCIMGUI_DEFINE_ENUMS_AND_STRUCTS
-    -I${LUAJIT_INCLUDE_DIRS})
-
-set_source_files_properties(${CMAKE_CURRENT_SOURCE_DIR}/imgui.i PROPERTIES CPLUSPLUS ON)
-
-
-
-#-------------------------------------------------
-#  SWIG Lua binding  (imgui_lua)
-#-------------------------------------------------
-swig_add_library(imgui_lua
-    TYPE MODULE
-    LANGUAGE lua
-    SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/imgui.i)
-
-swig_link_libraries(imgui_lua PRIVATE cimgui ${LUAJIT_LIBRARIES} dl)
-target_include_directories(imgui_lua PRIVATE
-    ${CIMGUI_DIR}
-    ${LUAJIT_INCLUDE_DIRS})
-target_compile_definitions(imgui_lua PRIVATE CIMGUI_DEFINE_ENUMS_AND_STRUCTS)
+target_link_libraries(imgui_backend PUBLIC glfw OpenGL::GL GLEW::GLEW imgui)
 
 #-------------------------------------------------
 #  PortAudio (submodule)
 #-------------------------------------------------
 add_subdirectory(external/portaudio EXCLUDE_FROM_ALL)
-set(PORTAUDIO_LIB portaudio)   # adjust to pa_static if necessary
+set(PORTAUDIO_LIB portaudio)  # change to pa_static if you built static
 
 #-------------------------------------------------
-#  RtMidi (header‑only + one .cpp)
+#  RtMidi (single .cpp)
 #-------------------------------------------------
 add_library(rtmidi STATIC external/rtmidi/RtMidi.cpp)
 target_include_directories(rtmidi PUBLIC external/rtmidi)
 if(UNIX AND NOT APPLE)
     target_link_libraries(rtmidi PUBLIC asound pthread)
+endif()
+if(WIN32)
+    target_link_libraries(rtmidi PUBLIC winmm)
 endif()
 
 #-------------------------------------------------
@@ -97,38 +69,43 @@ endif()
 #-------------------------------------------------
 add_executable(sine_demo
     ${CMAKE_CURRENT_SOURCE_DIR}/main.cpp
-    ${IMGUI_BACKEND_SRC})   # embed backend for IDE indexing
+    ${IMGUI_BACKEND_SRC}               # include for IDE browsing
+)
 
 target_include_directories(sine_demo PRIVATE
     ${IMGUI_DIR}
     ${IMGUI_DIR}/backends
     ${LUAJIT_INCLUDE_DIRS}
-    ${GLEW_INCLUDE_DIRS})
+    ${GLEW_INCLUDE_DIRS}
+)
 
 target_compile_definitions(sine_demo PRIVATE IMGUI_IMPL_OPENGL_LOADER_GLEW)
 
 target_link_libraries(sine_demo PRIVATE
     imgui_backend
-    cimgui
+    imgui
     glfw
     OpenGL::GL
     GLEW::GLEW
     ${LUAJIT_LIBRARIES}
     dl pthread
     ${PORTAUDIO_LIB}
-    rtmidi)
+    rtmidi
+)
+
+if(WIN32)
+    target_link_libraries(sine_demo PRIVATE ole32 setupapi)
+endif()
 
 #-------------------------------------------------
-#  Post‑build: copy scripts/modules   <‑‑ UPDATED
+#  Post‑build: copy Lua script(s)
 #-------------------------------------------------
 add_custom_command(TARGET sine_demo POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E make_directory $<TARGET_FILE_DIR:sine_demo>
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            $<TARGET_FILE:imgui_lua>
-            $<TARGET_FILE_DIR:sine_demo>
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
             ${CMAKE_CURRENT_SOURCE_DIR}/sine_ui.lua
-            $<TARGET_FILE_DIR:sine_demo>)
+            $<TARGET_FILE_DIR:sine_demo>
+)
 
 #-------------------------------------------------
 #  Convenience target:  `make run`
