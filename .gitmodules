@@ -13,3 +13,7 @@
 [submodule "external/rtmidi"]
 	path = external/rtmidi
 	url = https://github.com/thestk/rtmidi
+[submodule "external/imgui"]
+	path = external/imgui
+	url = https://github.com/ocornut/imgui.git
+	branch = docking
