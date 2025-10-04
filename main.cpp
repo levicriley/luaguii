@@ -370,13 +370,19 @@ int main(){
         lua_pop(L,1);
     }
 
+    ImGui::GetIO().ConfigFlags |= ImGuiConfigFlags_DockingEnable;
+
     while(!glfwWindowShouldClose(win)){
         glfwPollEvents();
+
         callLuaIfExists(L,"pre_frame");
 
         ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplGlfw_NewFrame();
         ImGui::NewFrame();
+        ImGui::DockSpaceOverViewport();  // uses main viewport, auto ID
+
+
         callLuaIfExists(L,"draw_ui");
 
         ImGui::Render();
@@ -387,6 +393,7 @@ int main(){
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
 
         callLuaIfExists(L,"post_frame");
+
         glfwSwapBuffers(win);
     }
 
