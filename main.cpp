@@ -1,14 +1,15 @@
-/* main.cpp ─ ImGui + Tcl + Lua + PortAudio + RtMidi + core‑GL (triangle + cube) demo
+/* main.cpp ─ ImGui + Tcl + Lua + PortAudio + RtMidi + core-GL (triangle + cube) demo
  * build:   needs GLEW, GLFW, Tcl, Lua, SWIG shims (imgui_tcl.so / imgui_lua.so),
- *          PortAudio, RtMidi
- * author:  2025‑07‑20  */
+ *          PortAudio, RtMidi, llama.cpp
+ * author:  2025-07-20  */
 
-#define IMGUI_IMPL_OPENGL_LOADER_GLEW
 #include <GL/glew.h>
 #include <GLFW/glfw3.h>
 
 #include <portaudio.h>
 #include "RtMidi.h"
+
+#include "llama.h"
 
 #include "imgui.h"
 #include "imgui_impl_glfw.h"
@@ -27,6 +28,7 @@ extern "C" {
 #include <algorithm>
 #include <string>
 #include <cstdint>   /* intptr_t */
+#include <cstring>   /* strlen */
 
 /*──────────────────── 1. PortAudio test tone ───────────────────*/
 struct Sine { double phase = 0.0, freq = 440.0; } gSine;
@@ -46,6 +48,7 @@ static int paCB(const void*, void* out,
     }
     return paContinue;
 }
+
 /*──────────────────── 3. FBO + shader triangle ─────────────────────*/
 struct MiniFBO {
     GLuint fbo=0,tex=0,rbo=0; int w=0,h=0;
@@ -101,8 +104,6 @@ static void renderTriangle(int side)
 static GLuint gCubeProg = 0, gCubeVAO = 0, gCubeVBO = 0;
 static MiniFBO gCubeFBO;                                // reuse helper
 
-// --- replace the two older helpers -----------------------------------------------------
-
 static const char* cubeVS = R"(
     #version 330 core
     layout(location=0) in vec3 p;
@@ -110,7 +111,6 @@ static const char* cubeVS = R"(
     uniform float angle;   // radians
     uniform float aspect;  // side/side == 1, but keep in case you change FBO
 
-    // very small helper: column‑major mat4 from 16 floats -----------------
     mat4 m4(float a0,float a1,float a2,float a3,
             float b0,float b1,float b2,float b3,
             float c0,float c1,float c2,float c3,
@@ -119,17 +119,14 @@ static const char* cubeVS = R"(
 
     void main()
     {
-        /* 1) model: rotate & scale */
         mat4 R = m4(  cos(angle), 0, -sin(angle), 0,
                        0,         1,  0,          0,
                        sin(angle), 0,  cos(angle), 0,
                        0,0,0,1);
         mat4 S = m4( 0.6,0,0,0,  0,0.6,0,0,  0,0,0.6,0,  0,0,0,1);
 
-        /* 2) view: simple camera at +Z looking toward origin */
         mat4 V = m4( 1,0,0,0,  0,1,0,0,  0,0,1,0,  0,0,-3,1);
 
-        /* 3) projection:  60° vertical FOV, 0.1–10 range */
         float f = 1.0 / tan(radians(60.0)/2.0);
         mat4 P = m4( f/aspect,0,0,0,
                      0,f,0,0,
@@ -143,11 +140,10 @@ static const char* cubeVS = R"(
 static const char* cubeFS = R"(
     #version 330 core
     out vec4 color;
-    void main(){ color = vec4(0.7,0.8,1.0,1); }   // light blue
+    void main(){ color = vec4(0.7,0.8,1.0,1); }
 )";
+
 static MiniFBO gTclCubeFBO, gLuaCubeFBO;
-
-
 
 static void ensureCubeProgram()
 {
@@ -158,7 +154,7 @@ static void ensureCubeProgram()
         glShaderSource(id,1,&s,nullptr); glCompileShader(id);
         GLint ok; glGetShaderiv(id,GL_COMPILE_STATUS,&ok);
         if(!ok){ char log[256]; glGetShaderInfoLog(id,256,nullptr,log);
-                 fprintf(stderr,"%s\n",log); }
+                 std::fprintf(stderr,"%s\n",log); }
         return id;
     };
 
@@ -167,7 +163,6 @@ static void ensureCubeProgram()
     glAttachShader(gCubeProg, sh(GL_FRAGMENT_SHADER, cubeFS));
     glLinkProgram(gCubeProg);
 
-    /* ---------- NEW: upload 36‑vertex cube ---------- */
     const float verts[] = {
         // front
         -1,-1, 1,  1,-1, 1,  1, 1, 1,  -1,-1, 1,  1, 1, 1,  -1, 1, 1,
@@ -191,8 +186,8 @@ static void ensureCubeProgram()
     glBufferData(GL_ARRAY_BUFFER, sizeof(verts), verts, GL_STATIC_DRAW);
     glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 0, (void*)0);
     glEnableVertexAttribArray(0);
-    /* ------------------------------------------------- */
 }
+
 static void renderCubeInto(MiniFBO& fbo, int side, float angle) {
     ensureCubeProgram();
     fbo.ensure(side);
@@ -213,8 +208,6 @@ static void renderCubeInto(MiniFBO& fbo, int side, float angle) {
     glDisable(GL_DEPTH_TEST);
 }
 
-
-/* draw the cube into an FBO of size ‹side›×‹side›, rotated ‹angle› radians */
 static void renderCube(int side,float angle)
 {
     ensureCubeProgram();
@@ -228,7 +221,7 @@ static void renderCube(int side,float angle)
 
     glUseProgram(gCubeProg);
     glUniform1f(glGetUniformLocation(gCubeProg,"angle"),angle);
-    glUniform1f(glGetUniformLocation(gCubeProg,"aspect"),1.0f); // square FBO
+    glUniform1f(glGetUniformLocation(gCubeProg,"aspect"),1.0f);
 
     glBindVertexArray(gCubeVAO);
     glDrawArrays(GL_TRIANGLES,0,36);
@@ -236,7 +229,6 @@ static void renderCube(int side,float angle)
     glBindFramebuffer(GL_FRAMEBUFFER,0);
     glDisable(GL_DEPTH_TEST);
 }
-
 
 /*──────────────────── 6. Lua wrappers & registration ─────────────────*/
 static int lua_slider_float(lua_State* L){
@@ -276,7 +268,6 @@ static int lua_gl_cube(lua_State* L){
                  ImVec2(0,1),ImVec2(1,0));
     return 0;
 }
-
 static int lua_audio_set_freq(lua_State* L){
     gSine.freq=luaL_checknumber(L,1);
     return 0;
@@ -300,7 +291,6 @@ static int lua_begin(lua_State* L){
 static int lua_end(lua_State* L){
     ImGui::End(); return 0;
 }
-
 static void registerAllLua(lua_State* L){
     luaL_Reg fns[] = {
         {"slider_float",   lua_slider_float},
@@ -327,8 +317,10 @@ static void callLuaIfExists(lua_State* L,const char* fn){
             std::fprintf(stderr,"[Lua] %s error: %s\n",fn,lua_tostring(L,-1));
             lua_pop(L,1);
         }
-    } else lua_pop(L,1);
+    } else { lua_pop(L,1); }
 }
+
+
 
 /*──────────────────── 8. main() ──────────────────────────────*/
 int main(){
@@ -342,7 +334,7 @@ int main(){
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR,3);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR,3);
     glfwWindowHint(GLFW_OPENGL_PROFILE,GLFW_OPENGL_CORE_PROFILE);
-    GLFWwindow* win=glfwCreateWindow(960,540,"Core‑GL in ImGui",nullptr,nullptr);
+    GLFWwindow* win=glfwCreateWindow(960,540,"Core-GL in ImGui",nullptr,nullptr);
     if(!win){ glfwTerminate(); return 1; }
     glfwMakeContextCurrent(win); glfwSwapInterval(1);
     glewExperimental=GL_TRUE; glewInit();
@@ -370,6 +362,9 @@ int main(){
         lua_pop(L,1);
     }
 
+    // --- Run the LLaMA demo once; prints to stdout ---
+    //demo_llm_once();
+
     ImGui::GetIO().ConfigFlags |= ImGuiConfigFlags_DockingEnable;
 
     while(!glfwWindowShouldClose(win)){
@@ -380,8 +375,7 @@ int main(){
         ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplGlfw_NewFrame();
         ImGui::NewFrame();
-        ImGui::DockSpaceOverViewport();  // uses main viewport, auto ID
-
+        ImGui::DockSpaceOverViewport();
 
         callLuaIfExists(L,"draw_ui");
 

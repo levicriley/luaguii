@@ -15,7 +15,7 @@ find_package(PkgConfig REQUIRED)
 pkg_check_modules(LUAJIT REQUIRED luajit)
 
 #-------------------------------------------------
-#  Dear ImGui (regular, vendored)
+#  Dear ImGui (vendored)
 #-------------------------------------------------
 set(IMGUI_DIR ${CMAKE_CURRENT_SOURCE_DIR}/external/imgui)
 
@@ -65,11 +65,30 @@ if(WIN32)
 endif()
 
 #-------------------------------------------------
+#  llama.cpp (submodule, optional)
+#-------------------------------------------------
+option(ENABLE_LLAMACPP "Build with llama.cpp inference support" ON)
+
+if(ENABLE_LLAMACPP)
+    # Uncomment to enable backends:
+    # set(LLAMA_BLAS ON CACHE BOOL "" FORCE)
+    # set(LLAMA_BLAS_VENDOR "OpenBLAS" CACHE STRING "" FORCE)
+    # set(LLAMA_CUBLAS ON CACHE BOOL "" FORCE)
+    # set(LLAMA_METAL ON CACHE BOOL "" FORCE)
+
+    add_subdirectory(external/llama.cpp EXCLUDE_FROM_ALL)
+
+    add_library(llama_cpp_interface INTERFACE)
+    target_include_directories(llama_cpp_interface INTERFACE
+        ${CMAKE_CURRENT_SOURCE_DIR}/external/llama.cpp/include)
+    target_link_libraries(llama_cpp_interface INTERFACE llama)
+endif()
+
+#-------------------------------------------------
 #  Main demo executable
 #-------------------------------------------------
 add_executable(sine_demo
     ${CMAKE_CURRENT_SOURCE_DIR}/main.cpp
-    ${IMGUI_BACKEND_SRC}               # include for IDE browsing
 )
 
 target_include_directories(sine_demo PRIVATE
@@ -88,17 +107,24 @@ target_link_libraries(sine_demo PRIVATE
     OpenGL::GL
     GLEW::GLEW
     ${LUAJIT_LIBRARIES}
-    dl pthread
     ${PORTAUDIO_LIB}
     rtmidi
 )
+
+if(UNIX AND NOT APPLE)
+    target_link_libraries(sine_demo PRIVATE dl pthread)
+endif()
 
 if(WIN32)
     target_link_libraries(sine_demo PRIVATE ole32 setupapi)
 endif()
 
+if(ENABLE_LLAMACPP)
+    target_link_libraries(sine_demo PRIVATE llama_cpp_interface)
+endif()
+
 #-------------------------------------------------
-#  Post‑build: copy Lua script(s)
+#  Post-build: copy Lua script(s)
 #-------------------------------------------------
 add_custom_command(TARGET sine_demo POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E make_directory $<TARGET_FILE_DIR:sine_demo>
@@ -108,9 +134,59 @@ add_custom_command(TARGET sine_demo POST_BUILD
 )
 
 #-------------------------------------------------
+#  Post-build: copy models/ (GGUFs) next to the binary
+#-------------------------------------------------
+set(MODELS_DIR "${CMAKE_SOURCE_DIR}/models")
+if(EXISTS "${MODELS_DIR}")
+  add_custom_command(TARGET sine_demo POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory
+            "$<TARGET_FILE_DIR:sine_demo>/models"
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+            "${MODELS_DIR}"
+            "$<TARGET_FILE_DIR:sine_demo>/models"
+    COMMENT "Copying GGUF models to build output"
+  )
+endif()
+
+#-------------------------------------------------
 #  Convenience target:  `make run`
 #-------------------------------------------------
 add_custom_target(run
     COMMAND sine_demo
     DEPENDS sine_demo
     WORKING_DIRECTORY $<TARGET_FILE_DIR:sine_demo>)
+
+#-------------------------------------------------
+#  (Optional) Install rules — commented out
+#-------------------------------------------------
+# include(GNUInstallDirs)
+# install(TARGETS sine_demo RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+# if(EXISTS "${MODELS_DIR}")
+#   install(DIRECTORY "${MODELS_DIR}/" DESTINATION ${CMAKE_INSTALL_BINDIR}/models)
+# endif()
+# install(FILES ${CMAKE_SOURCE_DIR}/sine_ui.lua DESTINATION ${CMAKE_INSTALL_BINDIR})
+
+
+# ---- Mini console-only llama demo ----
+add_executable(mini_llama ${CMAKE_CURRENT_SOURCE_DIR}/mini_llama.cpp)
+target_include_directories(mini_llama PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/external/llama.cpp/include)
+target_link_libraries(mini_llama PRIVATE llama)
+
+# Run it from the same out dir as sine_demo so models/ copy works
+add_custom_target(run_mini
+    COMMAND mini_llama "Say hi in one sentence."
+    DEPENDS mini_llama
+    WORKING_DIRECTORY $<TARGET_FILE_DIR:mini_llama>)
+
+# Reuse the models/ copy step for mini_llama as well
+set(MODELS_DIR "${CMAKE_SOURCE_DIR}/models")
+if(EXISTS "${MODELS_DIR}")
+  add_custom_command(TARGET mini_llama POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory
+            "$<TARGET_FILE_DIR:mini_llama>/models"
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+            "${MODELS_DIR}"
+            "$<TARGET_FILE_DIR:mini_llama>/models"
+    COMMENT "Copying GGUF models to mini_llama output")
+endif()
