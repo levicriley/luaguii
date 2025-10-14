@@ -1,400 +1,279 @@
-/* main.cpp ─ ImGui + Tcl + Lua + PortAudio + RtMidi + core-GL (triangle + cube) demo
- * build:   needs GLEW, GLFW, Tcl, Lua, SWIG shims (imgui_tcl.so / imgui_lua.so),
- *          PortAudio, RtMidi, llama.cpp
- * author:  2025-07-20  */
-
 #include <GL/glew.h>
 #include <GLFW/glfw3.h>
-
 #include <portaudio.h>
-#include "RtMidi.h"
 
-#include "llama.h"
-
+#define IMGUI_DEFINE_MATH_OPERATORS
 #include "imgui.h"
 #include "imgui_impl_glfw.h"
 #include "imgui_impl_opengl3.h"
+#include "imgui-knobs.h"
 
-/* Lua headers */
 extern "C" {
 #include <lua.h>
-#include <lualib.h>
 #include <lauxlib.h>
+#include <lualib.h>
 }
 
-#include <vector>
 #include <cmath>
 #include <cstdio>
+#include <vector>
 #include <algorithm>
-#include <string>
-#include <cstdint>   /* intptr_t */
-#include <cstring>   /* strlen */
 
-/*──────────────────── 1. PortAudio test tone ───────────────────*/
-struct Sine { double phase = 0.0, freq = 440.0; } gSine;
-
-static int paCB(const void*, void* out,
-                unsigned long frames,
-                const PaStreamCallbackTimeInfo*, PaStreamCallbackFlags,
-                void* user)
-{
-    auto* s   = static_cast<Sine*>(user);
-    float* buf= static_cast<float*>(out);
-    double inc= 2.0 * M_PI * s->freq / 48'000.0;
-    for (unsigned long i = 0; i < frames; ++i) {
-        buf[i] = std::sin(s->phase);
-        s->phase += inc;
-        if (s->phase > 2 * M_PI) s->phase -= 2 * M_PI;
-    }
+/*──────────────────── Audio ───────────────────*/
+struct Sine { double phase=0.0, freq=440.0; } gSine;
+static int paCB(const void*, void* out, unsigned long frames,
+                const PaStreamCallbackTimeInfo*, PaStreamCallbackFlags, void* user){
+    auto*s=(Sine*)user; float*buf=(float*)out; const double inc=2.0*M_PI*s->freq/48000.0;
+    for(unsigned long i=0;i<frames;++i){ buf[i]=std::sin(s->phase); s->phase+=inc; if(s->phase>2*M_PI)s->phase-=2*M_PI; }
     return paContinue;
 }
 
-/*──────────────────── 3. FBO + shader triangle ─────────────────────*/
+/*──────────────────── Mini FBO ───────────────────*/
 struct MiniFBO {
     GLuint fbo=0,tex=0,rbo=0; int w=0,h=0;
     void ensure(int side){
-        if (side<=w && side<=h) return;
+        side = std::max(1, side);
+        if (fbo && side<=w && side<=h) return;
         w=h=side;
         if(!fbo) glGenFramebuffers(1,&fbo);
-        if(!tex) glGenTextures   (1,&tex);
+        if(!tex) glGenTextures(1,&tex);
         if(!rbo) glGenRenderbuffers(1,&rbo);
 
-        glBindTexture   (GL_TEXTURE_2D,tex);
-        glTexImage2D    (GL_TEXTURE_2D,0,GL_RGBA8,w,h,0,GL_RGBA,GL_UNSIGNED_BYTE,nullptr);
-        glTexParameteri (GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_LINEAR);
-        glTexParameteri (GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_LINEAR);
+        glBindTexture(GL_TEXTURE_2D, tex);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
 
-        glBindRenderbuffer(GL_RENDERBUFFER,rbo);
-        glRenderbufferStorage(GL_RENDERBUFFER,GL_DEPTH24_STENCIL8,w,h);
+        glBindRenderbuffer(GL_RENDERBUFFER, rbo);
+        glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8, w, h);
 
-        glBindFramebuffer(GL_FRAMEBUFFER,fbo);
-        glFramebufferTexture2D(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,GL_TEXTURE_2D,tex,0);
-        glFramebufferRenderbuffer(GL_FRAMEBUFFER,GL_DEPTH_STENCIL_ATTACHMENT,GL_RENDERBUFFER,rbo);
-
-        if (glCheckFramebufferStatus(GL_FRAMEBUFFER)!=GL_FRAMEBUFFER_COMPLETE)
-            std::fprintf(stderr,"FBO incomplete!\n");
-
-        glBindFramebuffer(GL_FRAMEBUFFER,0);
+        glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex, 0);
+        glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, rbo);
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
     }
-} gMini;
+};
 
-static GLuint gProg = 0, gVAO = 0;
-static void ensureTriangleProgram()
-{
-    if (gProg) return;
-    /* … compile & link your triangle shaders … */
-    glGenVertexArrays(1,&gVAO);
+/*──────────────────── Torus Shader (ray-march) ───────────────────*/
+static MiniFBO gLuaTorusFBO;
+static GLuint  gTorusProg=0, gTorusVAO=0;
+
+static const char* kTorusVS = R"(
+#version 330
+const vec2 V[3]=vec2[3](vec2(-1,-1),vec2(3,-1),vec2(-1,3));
+out vec2 uv; void main(){ vec2 p=V[gl_VertexID]; gl_Position=vec4(p,0,1); uv=p*0.5+0.5; }
+)";
+
+static const char* kTorusFS = R"(
+#version 330
+in vec2 uv; out vec4 color;
+uniform float yaw,pitch,R,r;
+float sdTorus(vec3 p,vec2 t){ vec2 q=vec2(length(p.xz)-t.x,p.y); return length(q)-t.y; }
+mat3 rotY(float a){ float c=cos(a),s=sin(a); return mat3(c,0,s, 0,1,0, -s,0,c); }
+mat3 rotX(float a){ float c=cos(a),s=sin(a); return mat3(1,0,0, 0,c,-s, 0,s,c); }
+vec3 nrm(vec3 p,vec2 T){ float e=.001;
+  vec3 n=vec3(sdTorus(p+vec3(e,0,0),T)-sdTorus(p-vec3(e,0,0),T),
+              sdTorus(p+vec3(0,e,0),T)-sdTorus(p-vec3(0,e,0),T),
+              sdTorus(p+vec3(0,0,e),T)-sdTorus(p-vec3(0,0,e),T)); return normalize(n); }
+void main(){
+  vec2 p=uv*2-1; vec3 ro=vec3(0,0,3), rd=normalize(vec3(p,-1.5));
+  mat3 RY=rotY(yaw), RX=rotX(pitch);
+  float t=0; bool hit=false; vec2 T=vec2(R,r);
+  for(int i=0;i<96;i++){ vec3 pos=RX*(RY*(ro+rd*t)); float d=sdTorus(pos,T);
+    if(d<.001){hit=true;break;} t+=d*.9; if(t>20)break; }
+  vec3 col=vec3(.16,.18,.22);
+  if(hit){ vec3 pos=RX*(RY*(ro+rd*t)); vec3 n=nrm(pos,T);
+    vec3 l=normalize(vec3(.5,.8,.3)); float diff=max(dot(n,l),0);
+    float spec=pow(max(dot(reflect(-l,n),-rd),0),32); col=vec3(.70,.82,1.00)*(.25+.75*diff)+.25*spec; }
+  color=vec4(col,1);
+}
+)";
+
+static void ensureTorusProgram(){
+    if (gTorusProg) return;
+    auto sh=[](GLenum t,const char*s){ GLuint id=glCreateShader(t);
+      glShaderSource(id,1,&s,nullptr); glCompileShader(id);
+      GLint ok; glGetShaderiv(id, GL_COMPILE_STATUS, &ok);
+      if(!ok){ char log[512]; glGetShaderInfoLog(id,512,nullptr,log); std::fprintf(stderr,"[torus] %s\n",log); }
+      return id; };
+    GLuint vs=sh(GL_VERTEX_SHADER,kTorusVS), fs=sh(GL_FRAGMENT_SHADER,kTorusFS);
+    gTorusProg=glCreateProgram(); glAttachShader(gTorusProg,vs); glAttachShader(gTorusProg,fs);
+    glLinkProgram(gTorusProg); glDeleteShader(vs); glDeleteShader(fs);
+    glGenVertexArrays(1,&gTorusVAO);
 }
 
-static void renderTriangle(int side)
-{
-    ensureTriangleProgram();
-    gMini.ensure(side);
-    glBindFramebuffer(GL_FRAMEBUFFER,gMini.fbo);
+static void renderTorusInto(MiniFBO& fbo,int side,float yaw,float pitch,float R,float r){
+    ensureTorusProgram(); fbo.ensure(side);
+    glBindFramebuffer(GL_FRAMEBUFFER,fbo.fbo);
     glViewport(0,0,side,side);
-    glClearColor(0.1f,0.12f,0.15f,1.f);
+    glDisable(GL_DEPTH_TEST);
+    glClearColor(0.10f, 0.12f, 0.16f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT);
-    glUseProgram(gProg);
-    glBindVertexArray(gVAO);
+    glUseProgram(gTorusProg);
+    glUniform1f(glGetUniformLocation(gTorusProg,"yaw"),yaw);
+    glUniform1f(glGetUniformLocation(gTorusProg,"pitch"),pitch);
+    glUniform1f(glGetUniformLocation(gTorusProg,"R"),R);
+    glUniform1f(glGetUniformLocation(gTorusProg,"r"),r);
+    glBindVertexArray(gTorusVAO);
     glDrawArrays(GL_TRIANGLES,0,3);
     glBindFramebuffer(GL_FRAMEBUFFER,0);
 }
 
-/*────────────────────────  cube : shader + VAO  ───────────────────────*/
-static GLuint gCubeProg = 0, gCubeVAO = 0, gCubeVBO = 0;
-static MiniFBO gCubeFBO;                                // reuse helper
-
-static const char* cubeVS = R"(
-    #version 330 core
-    layout(location=0) in vec3 p;
-
-    uniform float angle;   // radians
-    uniform float aspect;  // side/side == 1, but keep in case you change FBO
-
-    mat4 m4(float a0,float a1,float a2,float a3,
-            float b0,float b1,float b2,float b3,
-            float c0,float c1,float c2,float c3,
-            float d0,float d1,float d2,float d3)
-    { return mat4(a0,a1,a2,a3, b0,b1,b2,b3, c0,c1,c2,c3, d0,d1,d2,d3); }
-
-    void main()
-    {
-        mat4 R = m4(  cos(angle), 0, -sin(angle), 0,
-                       0,         1,  0,          0,
-                       sin(angle), 0,  cos(angle), 0,
-                       0,0,0,1);
-        mat4 S = m4( 0.6,0,0,0,  0,0.6,0,0,  0,0,0.6,0,  0,0,0,1);
-
-        mat4 V = m4( 1,0,0,0,  0,1,0,0,  0,0,1,0,  0,0,-3,1);
-
-        float f = 1.0 / tan(radians(60.0)/2.0);
-        mat4 P = m4( f/aspect,0,0,0,
-                     0,f,0,0,
-                     0,0,-(10+0.1)/(10-0.1),-1,
-                     0,0,-(2*10*0.1)/(10-0.1),0);
-
-        gl_Position = P * V * R * S * vec4(p,1);
-    }
-)";
-
-static const char* cubeFS = R"(
-    #version 330 core
-    out vec4 color;
-    void main(){ color = vec4(0.7,0.8,1.0,1); }
-)";
-
-static MiniFBO gTclCubeFBO, gLuaCubeFBO;
-
-static void ensureCubeProgram()
-{
-    if (gCubeProg) return;
-
-    auto sh = [&](GLenum t,const char* s){
-        GLuint id = glCreateShader(t);
-        glShaderSource(id,1,&s,nullptr); glCompileShader(id);
-        GLint ok; glGetShaderiv(id,GL_COMPILE_STATUS,&ok);
-        if(!ok){ char log[256]; glGetShaderInfoLog(id,256,nullptr,log);
-                 std::fprintf(stderr,"%s\n",log); }
-        return id;
-    };
-
-    gCubeProg = glCreateProgram();
-    glAttachShader(gCubeProg, sh(GL_VERTEX_SHADER  , cubeVS));
-    glAttachShader(gCubeProg, sh(GL_FRAGMENT_SHADER, cubeFS));
-    glLinkProgram(gCubeProg);
-
-    const float verts[] = {
-        // front
-        -1,-1, 1,  1,-1, 1,  1, 1, 1,  -1,-1, 1,  1, 1, 1,  -1, 1, 1,
-        // back
-        -1,-1,-1, -1, 1,-1,  1, 1,-1,  -1,-1,-1,  1, 1,-1,   1,-1,-1,
-        // left
-        -1,-1,-1, -1,-1, 1, -1, 1, 1,  -1,-1,-1, -1, 1, 1,  -1, 1,-1,
-        // right
-         1,-1,-1,  1, 1,-1,  1, 1, 1,   1,-1,-1,  1, 1, 1,   1,-1, 1,
-        // top
-        -1, 1,-1, -1, 1, 1,  1, 1, 1,  -1, 1,-1,  1, 1, 1,   1, 1,-1,
-        // bottom
-        -1,-1,-1,  1,-1,-1,  1,-1, 1,  -1,-1,-1,  1,-1, 1,  -1,-1, 1
-    };
-
-    glGenVertexArrays(1,&gCubeVAO);
-    glGenBuffers     (1,&gCubeVBO);
-
-    glBindVertexArray(gCubeVAO);
-    glBindBuffer(GL_ARRAY_BUFFER, gCubeVBO);
-    glBufferData(GL_ARRAY_BUFFER, sizeof(verts), verts, GL_STATIC_DRAW);
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 0, (void*)0);
-    glEnableVertexAttribArray(0);
-}
-
-static void renderCubeInto(MiniFBO& fbo, int side, float angle) {
-    ensureCubeProgram();
-    fbo.ensure(side);
-    glBindFramebuffer(GL_FRAMEBUFFER, fbo.fbo);
-    glViewport(0, 0, side, side);
-    glEnable(GL_DEPTH_TEST);
-    glClearColor(0.1f, 0.12f, 0.16f, 1);
-    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-
-    glUseProgram(gCubeProg);
-    glUniform1f(glGetUniformLocation(gCubeProg,"angle"), angle);
-    glUniform1f(glGetUniformLocation(gCubeProg,"aspect"), 1.0f);
-
-    glBindVertexArray(gCubeVAO);
-    glDrawArrays(GL_TRIANGLES,0,36);
-
-    glBindFramebuffer(GL_FRAMEBUFFER,0);
-    glDisable(GL_DEPTH_TEST);
-}
-
-static void renderCube(int side,float angle)
-{
-    ensureCubeProgram();
-    gCubeFBO.ensure(side);
-
-    glBindFramebuffer(GL_FRAMEBUFFER,gCubeFBO.fbo);
-    glViewport(0,0,side,side);
-    glEnable(GL_DEPTH_TEST);
-    glClearColor(0.1f,0.12f,0.16f,1);
-    glClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT);
-
-    glUseProgram(gCubeProg);
-    glUniform1f(glGetUniformLocation(gCubeProg,"angle"),angle);
-    glUniform1f(glGetUniformLocation(gCubeProg,"aspect"),1.0f);
-
-    glBindVertexArray(gCubeVAO);
-    glDrawArrays(GL_TRIANGLES,0,36);
-
-    glBindFramebuffer(GL_FRAMEBUFFER,0);
-    glDisable(GL_DEPTH_TEST);
-}
-
-/*──────────────────── 6. Lua wrappers & registration ─────────────────*/
-static int lua_slider_float(lua_State* L){
-    int n=lua_gettop(L);
-    const char* label=luaL_checkstring(L,1);
-    float val=(float)luaL_checknumber(L,2);
-    float mn=(float)luaL_checknumber(L,3);
-    float mx=(float)luaL_checknumber(L,4);
-    float step=(n>=5)?(float)luaL_checknumber(L,5):0.001f;
-    ImGui::SliderFloat(label,&val,mn,mx,"%.3f",step);
-    lua_pushnumber(L,val); return 1;
-}
-static int lua_plot_sine(lua_State* L){
-    double amp=luaL_checknumber(L,1), freq=luaL_checknumber(L,2);
-    int samples=(int)luaL_optinteger(L,3,512);
-    samples=std::clamp(samples,2,2048);
-    static std::vector<float> buf; buf.resize(samples);
-    const float tp=6.2831853f;
-    for(int i=0;i<samples;++i)
-        buf[i]=(float)(amp*std::sin(tp*freq*(float)i/(samples-1)));
-    ImGui::PlotLines("##sine",buf.data(),samples,0,nullptr,(float)-amp,(float)amp,ImVec2(-1,150));
-    return 0;
-}
-static int lua_gl_triangle(lua_State* L){
-    int side=(int)luaL_optinteger(L,1,256);
-    renderTriangle(side);
-    ImGui::Image((ImTextureID)(intptr_t)gMini.tex,ImVec2((float)side,(float)side),
-                 ImVec2(0,1),ImVec2(1,0));
-    return 0;
-}
-static int lua_gl_cube(lua_State* L){
-    int side  = (int)luaL_checkinteger(L,1);
-    float ang = (float)luaL_checknumber(L,2);
-    renderCubeInto(gLuaCubeFBO, side, ang);
-    ImGui::Image((ImTextureID)(intptr_t)gLuaCubeFBO.tex,
-                 ImVec2((float)side,(float)side),
-                 ImVec2(0,1),ImVec2(1,0));
-    return 0;
-}
-static int lua_audio_set_freq(lua_State* L){
-    gSine.freq=luaL_checknumber(L,1);
-    return 0;
-}
-static int lua_midi_ports(lua_State* L){
-    RtMidiIn in; lua_newtable(L);
-    for(int i=0;i<in.getPortCount();++i){
-        lua_pushinteger(L,i+1);
-        lua_pushstring(L,in.getPortName(i).c_str());
-        lua_settable(L,-3);
-    }
+/*──────────────────── Lua bindings ───────────────────*/
+// knob(label, val, min, max [, step=0.01 [, size=56]]) -> new_val
+static int lua_knob_float(lua_State* L){
+    const char* label = luaL_checkstring(L,1);
+    float v     = (float)luaL_checknumber(L,2);
+    float vmin  = (float)luaL_optnumber (L,3,0.0);
+    float vmax  = (float)luaL_optnumber (L,4,1.0);
+    float step  = (float)luaL_optnumber (L,5,0.01);
+    float size  = (float)luaL_optnumber (L,6,56.0f);
+    // correct order: speed, format, VARIANT, size
+    ImGuiKnobs::Knob(label, &v, vmin, vmax, step, "%.3f", ImGuiKnobVariant_Tick, size);
+    lua_pushnumber(L, v);
     return 1;
 }
-static int lua_imgui_button(lua_State* L){
-    bool pressed=ImGui::Button(luaL_checkstring(L,1));
-    lua_pushboolean(L,pressed); return 1;
+
+// basic window & layout helpers (demo.* API)
+static int lua_begin(lua_State* L){ ImGui::Begin(luaL_checkstring(L,1)); return 0; }
+static int lua_end  (lua_State* L){ ImGui::End(); return 0; }
+static int lua_set_next_window_size(lua_State* L){
+    float w=(float)luaL_checknumber(L,1), h=(float)luaL_checknumber(L,2);
+    int cond=(int)luaL_optinteger(L,3,ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(w,h), cond); return 0;
 }
-static int lua_begin(lua_State* L){
-    ImGui::Begin(luaL_checkstring(L,1)); return 0;
+static int lua_begin_table(lua_State* L){
+    const char* id = luaL_checkstring(L,1); int cols=(int)luaL_checkinteger(L,2);
+    bool ok = ImGui::BeginTable(id, cols, ImGuiTableFlags_SizingStretchSame);
+    lua_pushboolean(L, ok); return 1;
 }
-static int lua_end(lua_State* L){
-    ImGui::End(); return 0;
+static int lua_table_next_column(lua_State* L){ ImGui::TableNextColumn(); return 0; }
+static int lua_end_table(lua_State* L){ ImGui::EndTable(); return 0; }
+static int lua_spacing(lua_State* L){ ImGui::Spacing(); return 0; }
+static int lua_separator(lua_State* L){ ImGui::Separator(); return 0; }
+
+// plot + audio
+static int lua_plot_sine(lua_State* L){
+    double amp = luaL_checknumber(L,1);
+    double f   = luaL_checknumber(L,2);
+    int    N   = std::clamp((int)luaL_optinteger(L,3,512), 2, 4096);
+    static std::vector<float> buf; buf.resize(N);
+    const float tp = 6.28318530718f;
+    for(int i=0;i<N;++i) buf[i] = (float)(amp * std::sin(tp * f * (float)i / (N-1)));
+    ImGui::PlotLines("##sine", buf.data(), N, 0, nullptr, (float)-amp, (float)amp, ImVec2(-1,150));
+    return 0;
 }
+static int lua_audio_set_freq(lua_State* L){ gSine.freq = luaL_checknumber(L,1); return 0; }
+
+// draw torus into FBO and show it centered; side<0 auto-fits, clamped 64..512
+static int lua_gl_torus(lua_State* L){
+    int   side  = (int)luaL_optinteger(L,1,-1);
+    float yaw   = (float)luaL_optnumber (L,2,0.0f);
+    float pitch = (float)luaL_optnumber (L,3,0.0f);
+    float R     = (float)luaL_optnumber (L,4,0.75f);
+    float r     = (float)luaL_optnumber (L,5,0.25f);
+
+    ImVec2 avail = ImGui::GetContentRegionAvail();
+    if (side < 0) side = (int)std::floor(std::max(1.0f, std::min(avail.x, avail.y)));
+    side = std::max(64, std::min(side, 512)); // keep window from exploding
+
+    renderTorusInto(gLuaTorusFBO, side, yaw, pitch, R, r);
+
+    ImVec2 start = ImGui::GetCursorPos();
+    float offX = std::max(0.0f, (avail.x - (float)side) * 0.5f);
+    float offY = std::max(0.0f, (avail.y - (float)side) * 0.5f);
+    ImGui::SetCursorPos(ImVec2(start.x + offX, start.y + offY));
+    ImGui::Image((ImTextureID)(intptr_t)gLuaTorusFBO.tex,
+                 ImVec2((float)side,(float)side),
+                 ImVec2(0,1), ImVec2(1,0));
+    ImGui::SetCursorPos(start);
+    ImGui::Dummy(avail);
+    return 0;
+}
+
 static void registerAllLua(lua_State* L){
     luaL_Reg fns[] = {
-        {"slider_float",   lua_slider_float},
-        {"plot_sine",      lua_plot_sine},
-        {"gl_triangle",    lua_gl_triangle},
-        {"gl_cube",        lua_gl_cube},
+        {"Begin", lua_begin},
+        {"End", lua_end},
+        {"SetNextWindowSize", lua_set_next_window_size},
+        {"BeginTable", lua_begin_table},
+        {"TableNextColumn", lua_table_next_column},
+        {"EndTable", lua_end_table},
+        {"Spacing", lua_spacing},
+        {"Separator", lua_separator},
+        {"knob_float", lua_knob_float},
+        {"plot_sine", lua_plot_sine},
         {"audio_set_freq", lua_audio_set_freq},
-        {"midi_ports",     lua_midi_ports},
-        {"imgui_button",   lua_imgui_button},
-        {"Begin",          lua_begin},
-        {"End",            lua_end},
+        {"gl_torus", lua_gl_torus},
         {nullptr,nullptr}
     };
-    luaL_newlib(L,fns);
-    lua_setglobal(L,"demo");
+    luaL_newlib(L, fns);
+    lua_setglobal(L, "demo");
 }
 
-/*──────────────────── 7. helpers ─────────────────────────*/
-static void glfwErr(int e,const char* d){ std::fprintf(stderr,"GLFW %d: %s\n",e,d); }
-static void callLuaIfExists(lua_State* L,const char* fn){
-    lua_getglobal(L,fn);
-    if(lua_isfunction(L,-1)){
-        if(lua_pcall(L,0,0,0)!=LUA_OK){
-            std::fprintf(stderr,"[Lua] %s error: %s\n",fn,lua_tostring(L,-1));
-            lua_pop(L,1);
-        }
-    } else { lua_pop(L,1); }
-}
-
-
-
-/*──────────────────── 8. main() ──────────────────────────────*/
+/*──────────────────── main ───────────────────*/
 int main(){
+    // audio
     Pa_Initialize();
-    PaStream* stream;
+    PaStream* stream=nullptr;
     Pa_OpenDefaultStream(&stream,0,1,paFloat32,48000,256,paCB,&gSine);
     Pa_StartStream(stream);
 
-    glfwSetErrorCallback(glfwErr);
-    if(!glfwInit()) return 1;
+    // window + GL
+    glfwInit();
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR,3);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR,3);
     glfwWindowHint(GLFW_OPENGL_PROFILE,GLFW_OPENGL_CORE_PROFILE);
-    GLFWwindow* win=glfwCreateWindow(960,540,"Core-GL in ImGui",nullptr,nullptr);
-    if(!win){ glfwTerminate(); return 1; }
+    GLFWwindow* win=glfwCreateWindow(1000,760,"Lua ImGui: Audio + Torus (Knobs)",nullptr,nullptr);
     glfwMakeContextCurrent(win); glfwSwapInterval(1);
     glewExperimental=GL_TRUE; glewInit();
 
-    IMGUI_CHECKVERSION(); ImGui::CreateContext(); ImGui::StyleColorsDark();
+    // ImGui (dark)
+    IMGUI_CHECKVERSION(); ImGui::CreateContext();
+    ImGui::StyleColorsDark();
     ImGui_ImplGlfw_InitForOpenGL(win,true);
     ImGui_ImplOpenGL3_Init("#version 330");
-    ImVec4 clear={0.16f,0.18f,0.22f,1};
+    ImVec4 clear = ImVec4(0.16f, 0.18f, 0.22f, 1.0f);
 
-    lua_State* L=luaL_newstate(); luaL_openlibs(L);
-    lua_getglobal(L,"package");
-    lua_getfield (L,-1,"cpath");
-    {
-        const char* cp=lua_tostring(L,-1);
-        std::string nc=cp?std::string(cp)+";./?.so":"./?.so";
-        lua_pop(L,1);
-        lua_pushlstring(L,nc.c_str(),nc.size());
-        lua_setfield(L,-2,"cpath");
-    }
-    lua_pop(L,1);
-    luaL_dostring(L,"pcall(require,'imgui_lua')");
+    // Lua
+    lua_State* L = luaL_newstate(); luaL_openlibs(L);
     registerAllLua(L);
-    if(luaL_dofile(L,"sine_ui.lua")!=LUA_OK){
-        std::fprintf(stderr,"[Lua] load error: %s\n",lua_tostring(L,-1));
+    if (luaL_dofile(L, "sine_ui.lua") != LUA_OK) {
+        std::fprintf(stderr, "[Lua] %s\n", lua_tostring(L,-1));
         lua_pop(L,1);
     }
 
-    // --- Run the LLaMA demo once; prints to stdout ---
-    //demo_llm_once();
-
-    ImGui::GetIO().ConfigFlags |= ImGuiConfigFlags_DockingEnable;
-
+    // frame loop
     while(!glfwWindowShouldClose(win)){
         glfwPollEvents();
-
-        callLuaIfExists(L,"pre_frame");
 
         ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplGlfw_NewFrame();
         ImGui::NewFrame();
-        ImGui::DockSpaceOverViewport();
 
-        callLuaIfExists(L,"draw_ui");
+        lua_getglobal(L, "draw_ui");
+        if(lua_isfunction(L,-1)){
+            if(lua_pcall(L,0,0,0)!=LUA_OK){
+                std::fprintf(stderr,"[Lua] draw_ui: %s\n", lua_tostring(L,-1));
+                lua_pop(L,1);
+            }
+        } else lua_pop(L,1);
 
         ImGui::Render();
-        int w,h; glfwGetFramebufferSize(win,&w,&h);
-        glViewport(0,0,w,h);
+
+        int W,H; glfwGetFramebufferSize(win,&W,&H);
+        glBindFramebuffer(GL_FRAMEBUFFER,0);
+        glViewport(0,0,W,H);
+        glDisable(GL_DEPTH_TEST);
         glClearColor(clear.x,clear.y,clear.z,clear.w);
         glClear(GL_COLOR_BUFFER_BIT);
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
-
-        callLuaIfExists(L,"post_frame");
 
         glfwSwapBuffers(win);
     }
 
     Pa_StopStream(stream); Pa_CloseStream(stream); Pa_Terminate();
     ImGui_ImplOpenGL3_Shutdown(); ImGui_ImplGlfw_Shutdown();
-    ImGui::DestroyContext();
-    glfwDestroyWindow(win); glfwTerminate();
-    lua_close(L);
+    ImGui::DestroyContext(); glfwDestroyWindow(win); glfwTerminate();
     return 0;
 }

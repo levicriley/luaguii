@@ -1,76 +1,41 @@
--- sine_ui.lua
+-- sine_ui.lua — dark theme; compact Torus window; centered FBO image
 
--- path to this script (must match how it's loaded in your C++ main)
-local script = "sine_ui.lua"
+-- audio/sine state
+local amp  = 1.0
+local freq = 440.0
 
--- fetch initial modification time
-local function get_mtime()
-  local p = io.popen('stat -c "%Y" "' .. script .. '" 2>/dev/null')
-  if not p then return 0 end
-  local t = tonumber(p:read("*a")) or 0
-  p:close()
-  return t
-end
-
-local last_mtime = get_mtime()
-
---------------------------------------------------------------------------------
--- Demo state
---------------------------------------------------------------------------------
-
--- state for sine plot
-local amp     = 1.0
-local freq    = 2.0
-local samples = 512
-
--- state for cube
-local angle   = 0.0
-local speed = 1.0
-
---------------------------------------------------------------------------------
--- Hooks
---------------------------------------------------------------------------------
-
-function pre_frame()
-  -- nothing here (yet)
-end
+-- torus state
+local yaw, pitch, R, r = 0.0, 0.0, 0.75, 0.25
 
 function draw_ui()
-  -- ─── AUDIO & SINE WINDOW ────────────────────────────────────
+  -- ─── AUDIO & SINE ───────────────────────────────────────────
   demo.Begin("Audio & Sine")
-    -- adjust audio freq
-    freq    = demo.slider_float("Audio Freq (Hz)", freq, 50.0, 2000.0, 1.0)
-    -- update PortAudio
-    demo.audio_set_freq(freq)
-
-    -- adjust plot parameters
-    amp     = demo.slider_float("Plot Amplitude", amp,     0.0,  5.0, 0.1)
-    local raw = demo.slider_float("Plot Samples",   samples, 16, 1024, 16)
-    samples = math.floor(raw + 0.5)
-
-    -- draw the sine curve
-    demo.plot_sine(amp, freq, samples)
-  demo.End()
-
-  -- ─── CUBE WINDOW ────────────────────────────────────────────
-  demo.Begin("Lua Cube")
-    speed     = demo.slider_float("Speed", speed,     0.0,  5.0, 0.1)
-    -- auto‑increment rotation at 1 rev/sec @~60FPS
-    angle = (angle + (2*math.pi)/60) % (2*math.pi)
-    demo.gl_cube(128, angle / (1.0 / speed))
-  demo.End()
-end
-
-function post_frame()
-  -- auto‑reload when the file changes on disk
-  local mtime = get_mtime()
-  if mtime > last_mtime then
-    last_mtime = mtime
-    local ok, err = pcall(dofile, script)
-    if ok then
-      print("🔄 Lua reload ok")
-    else
-      print("⚠ Lua reload error:", err)
+    if demo.BeginTable("audio_grid", 2) then
+      demo.TableNextColumn()
+      freq = demo.knob_float("Freq (Hz)", freq, 50.0, 2000.0, 1.0, 52.0)
+      demo.TableNextColumn()
+      amp  = demo.knob_float("Amplitude", amp, 0.0, 5.0, 0.01, 48.0)
+      demo.EndTable()
     end
-  end
+    demo.Spacing()
+    demo.plot_sine(amp, freq, 512)
+    demo.audio_set_freq(freq)
+  demo.End()
+
+  -- ─── TORUS (KNOBS + IMAGE) ─────────────────────────────────
+  -- small, fixed first size so the window doesn't explode
+  demo.SetNextWindowSize(380, 440) -- ImGuiCond_FirstUseEver by default in binding
+  demo.Begin("Torus (Knobs)")
+    if demo.BeginTable("torus_grid", 2) then
+      demo.TableNextColumn(); yaw   = demo.knob_float("Yaw",   yaw,   0.0, 2*math.pi, 0.01, 56.0)
+      demo.TableNextColumn(); pitch = demo.knob_float("Pitch", pitch, 0.0, 2*math.pi, 0.01, 56.0)
+      demo.TableNextColumn(); R     = demo.knob_float("Major R", R, 0.2, 1.4, 0.001, 48.0)
+      demo.TableNextColumn(); r     = demo.knob_float("Tube r",  r, 0.05, 0.6, 0.001, 48.0)
+      demo.EndTable()
+    end
+    demo.Separator()
+
+    -- auto-fit image to remaining region (C++ clamps to 64..512)
+    demo.gl_torus(-1, yaw, pitch, R, r)
+  demo.End()
 end
